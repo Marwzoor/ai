@@ -48,7 +48,7 @@ trait HandlesTextGeneration
             $type = $data['type'] ?? '';
 
             if ($type === 'error' || $type === 'response.failed') {
-                $error = $type === 'response.failed' ? ($data['response']['error'] ?? []) : ($data['error'] ?? []);
+                $error = $data['response']['error'] ?? $data['error'] ?? $data;
 
                 yield (new Error(
                     $this->generateEventId(),

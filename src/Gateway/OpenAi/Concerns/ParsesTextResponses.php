@@ -193,7 +193,7 @@ trait ParsesTextResponses
             return match ($data['incomplete_details']['reason'] ?? null) {
                 'max_output_tokens' => FinishReason::Length,
                 'content_filter' => FinishReason::ContentFilter,
-                default => FinishReason::Error,
+                default => FinishReason::Unknown,
             };
         }
 

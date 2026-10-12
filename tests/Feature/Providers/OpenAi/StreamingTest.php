@@ -196,12 +196,10 @@ test('streaming handles reasoning events', function (string $eventType): void {
     'reasoning text' => 'response.reasoning_text.delta',
 ]);
 
-test('streaming error event stops stream', function (): void {
+test('streaming error event stops stream', function (array $event): void {
     Http::fake([
         'api.openai.com/*' => Http::response(
-            body: $this->ssePayload([
-                ['type' => 'error', 'error' => ['code' => 'server_error', 'message' => 'Server overloaded']],
-            ]),
+            body: $this->ssePayload([$event]),
             status: 200,
             headers: ['Content-Type' => 'text/event-stream'],
         ),
@@ -218,7 +216,54 @@ test('streaming error event stops stream', function (): void {
     expect($error)->toBeInstanceOf(Error::class)
         ->and($error->type)->toBe('server_error')
         ->and($error->message)->toBe('Server overloaded');
-});
+})->with([
+    'error event' => [['type' => 'error', 'code' => 'server_error', 'message' => 'Server overloaded']],
+    'nested error event' => [['type' => 'error', 'error' => ['code' => 'server_error', 'message' => 'Server overloaded']]],
+    'failed response' => [['type' => 'response.failed', 'response' => ['id' => 'resp_1', 'status' => 'failed', 'error' => ['code' => 'server_error', 'message' => 'Server overloaded']]]],
+]);
+
+test('streaming without a terminal response throws', function (): void {
+    Http::fake([
+        'api.openai.com/*' => Http::response(
+            body: $this->ssePayload([$this->responseCreated(), $this->outputTextDelta('Partial')]),
+            status: 200,
+            headers: ['Content-Type' => 'text/event-stream'],
+        ),
+    ]);
+
+    $this->collectStreamEvents();
+})->throws(StreamErrorException::class, 'The provider ended the stream without completing the step.');
+
+test('streaming incomplete response keeps usage and skips tool calls', function (string $reason, FinishReason $expected): void {
+    Http::fake([
+        'api.openai.com/*' => Http::response(
+            body: $this->ssePayload([
+                $this->responseCreated(),
+                $this->outputItemAdded('fc_1', 'call_1', 'FixedNumberGenerator'),
+                $this->functionCallArgumentsDone('fc_1', '{}'),
+                $this->responseIncomplete($reason, 42, 128, output: [
+                    ['type' => 'function_call', 'status' => 'completed', 'id' => 'fc_1', 'call_id' => 'call_1', 'name' => 'FixedNumberGenerator', 'arguments' => '{}'],
+                ]),
+            ]),
+            status: 200,
+            headers: ['Content-Type' => 'text/event-stream'],
+        ),
+    ]);
+
+    $events = $this->collectStreamEvents(new ProviderOptionsWithToolsAgent);
+
+    $streamEnd = array_values(array_filter($events, fn ($e): bool => $e instanceof StreamEnd))[0];
+
+    expect($streamEnd->reason)->toBe($expected->value)
+        ->and($streamEnd->usage->inputTokens)->toBe(42)
+        ->and($streamEnd->usage->outputTokens)->toBe(128);
+
+    Http::assertSentCount(1);
+})->with([
+    'output limit maps to Length' => ['max_output_tokens', FinishReason::Length],
+    'content filter maps to ContentFilter' => ['content_filter', FinishReason::ContentFilter],
+    'unknown reason maps to Unknown' => ['max_messages', FinishReason::Unknown],
+]);
 
 test('streaming captures usage from response completed', function (): void {
     Http::fake([
